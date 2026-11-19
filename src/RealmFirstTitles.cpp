@@ -13,6 +13,8 @@
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "PlayerScript.h"
+#include "PlayerbotAIConfig.h"
+#include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
 #include "WorldScript.h"
 
@@ -110,6 +112,7 @@ struct RealmFirstTitleSettings
     bool AutoSetCurrentTitle = true;
     bool AuditRepairOfflineCharacters = true;
     bool PreventGMAchievements = true;
+    bool PreventBotAchievements = true;
     uint32 AuditOutputLimit = 25;
     uint32 ReportOutputLimit = 50;
 };
@@ -128,6 +131,23 @@ bool IsGMPlayer(Player const* player)
         return true;
 
     return false;
+}
+
+// Tofu: random and addclass bots live on the playerbots random-bot accounts; altbots live on real player accounts and are not excluded.
+bool IsExcludedBotAccount(uint32 accountId)
+{
+    if (!Settings.PreventBotAchievements || !accountId)
+        return false;
+
+    return sPlayerbotAIConfig.IsInRandomAccountList(accountId) || sRandomPlayerbotMgr.IsAddClassAccount(accountId);
+}
+
+bool IsExcludedBot(Player const* player)
+{
+    if (!player || !player->GetSession())
+        return false;
+
+    return IsExcludedBotAccount(player->GetSession()->GetAccountId());
 }
 
 bool IsRewardEnabled(RealmFirstTitleReward const& reward)
@@ -261,6 +281,12 @@ bool EnsureRealmFirstTitle(Player* player, RealmFirstTitleReward const& reward, 
     {
         LOG_WARN("module.realmfirsttitles", "RealmFirstTitles: missing CharTitles.dbc entry {} for achievement {} ({}).",
             reward.TitleId, reward.AchievementId, reward.Label);
+        return false;
+    }
+
+    if (IsExcludedBot(player))
+    {
+        RemoveRealmFirstTitle(player, reward);
         return false;
     }
 
@@ -502,7 +528,7 @@ AuditStats AuditRealmFirstTitles(ChatHandler* handler, bool repair)
     }
 
     QueryResult result = CharacterDatabase.Query(
-        "SELECT `ca`.`guid`, `c`.`name`, `ca`.`achievement`, `ca`.`date`, COALESCE(`c`.`knownTitles`, ''), `c`.`online` "
+        "SELECT `ca`.`guid`, `c`.`name`, `ca`.`achievement`, `ca`.`date`, COALESCE(`c`.`knownTitles`, ''), `c`.`online`, `c`.`account` "
         "FROM `character_achievement` `ca` "
         "INNER JOIN `characters` `c` ON `c`.`guid` = `ca`.`guid` "
         "WHERE `ca`.`achievement` IN ({}) "
@@ -521,6 +547,7 @@ AuditStats AuditRealmFirstTitles(ChatHandler* handler, bool repair)
         uint32 const date = fields[3].Get<uint32>();
         std::string const knownTitlesText = fields[4].Get<std::string>();
         bool const online = fields[5].Get<uint8>() != 0;
+        bool const excludedBot = IsExcludedBotAccount(fields[6].Get<uint32>());
 
         ++stats.Rows;
 
@@ -533,7 +560,7 @@ AuditStats AuditRealmFirstTitles(ChatHandler* handler, bool repair)
             continue;
 
         bool const hasTitle = CharacterHasWatchedTitle(guid, knownTitlesText, title);
-        bool const shouldHaveTitle = !Settings.RequireCanonicalFirstHolder || (canonicalByAchievement.contains(achievementId) && canonicalByAchievement[achievementId] == guid);
+        bool const shouldHaveTitle = !excludedBot && (!Settings.RequireCanonicalFirstHolder || (canonicalByAchievement.contains(achievementId) && canonicalByAchievement[achievementId] == guid));
 
         if (hasTitle && !shouldHaveTitle)
         {
@@ -744,10 +771,11 @@ void LoadRealmFirstTitleConfig()
     Settings.AutoSetCurrentTitle = sConfigMgr->GetOption<bool>("RealmFirstTitles.AutoSetCurrentTitle", true);
     Settings.AuditRepairOfflineCharacters = sConfigMgr->GetOption<bool>("RealmFirstTitles.AuditRepairOfflineCharacters", true);
     Settings.PreventGMAchievements = sConfigMgr->GetOption<bool>("RealmFirstTitles.PreventGMAchievements", true);
+    Settings.PreventBotAchievements = sConfigMgr->GetOption<bool>("RealmFirstTitles.PreventBotAchievements", true);
     Settings.AuditOutputLimit = sConfigMgr->GetOption<uint32>("RealmFirstTitles.AuditOutputLimit", 25);
     Settings.ReportOutputLimit = sConfigMgr->GetOption<uint32>("RealmFirstTitles.ReportOutputLimit", 50);
 
-    LOG_INFO("module.realmfirsttitles", "RealmFirstTitles: {}. BlizzlikeRaid={}, RestoredBeta={}, LightOfDawnFallback={}, CanonicalOnly={}, LoginSync={}, StartupRepair={}, OfflineRepair={}, PreventGMs={}.",
+    LOG_INFO("module.realmfirsttitles", "RealmFirstTitles: {}. BlizzlikeRaid={}, RestoredBeta={}, LightOfDawnFallback={}, CanonicalOnly={}, LoginSync={}, StartupRepair={}, OfflineRepair={}, PreventGMs={}, PreventBots={}.",
         Settings.Enabled ? "enabled" : "disabled",
         Settings.GrantBlizzlikeRaidTitles ? "on" : "off",
         Settings.GrantRestoredBetaTitles ? "on" : "off",
@@ -756,7 +784,8 @@ void LoadRealmFirstTitleConfig()
         Settings.SyncOnLogin ? "on" : "off",
         Settings.RepairOnStartup ? "on" : "off",
         Settings.AuditRepairOfflineCharacters ? "on" : "off",
-        Settings.PreventGMAchievements ? "on" : "off");
+        Settings.PreventGMAchievements ? "on" : "off",
+        Settings.PreventBotAchievements ? "on" : "off");
 }
 }
 
@@ -806,12 +835,22 @@ public:
 
     bool OnPlayerBeforeAchievementComplete(Player* player, AchievementEntry const* achievement) override
     {
-        if (!player || !achievement || !Settings.Enabled || !Settings.PreventGMAchievements)
+        if (!player || !achievement || !Settings.Enabled)
             return true;
 
-        if (IsGMPlayer(player) && IsRealmFirstAchievement(achievement))
+        if (!IsRealmFirstAchievement(achievement))
+            return true;
+
+        if (Settings.PreventGMAchievements && IsGMPlayer(player))
         {
             LOG_INFO("module.realmfirsttitles", "Prevented GM character {} from completing Realm First achievement {} ({}).",
+                player->GetName(), achievement->ID, achievement->name[LOCALE_enUS]);
+            return false;
+        }
+
+        if (IsExcludedBot(player))
+        {
+            LOG_INFO("module.realmfirsttitles", "Prevented random or addclass bot {} from completing Realm First achievement {} ({}).",
                 player->GetName(), achievement->ID, achievement->name[LOCALE_enUS]);
             return false;
         }
@@ -821,14 +860,18 @@ public:
 
     bool OnPlayerBeforeCriteriaProgress(Player* player, AchievementCriteriaEntry const* criteria) override
     {
-        if (!player || !criteria || !Settings.Enabled || !Settings.PreventGMAchievements)
+        if (!player || !criteria || !Settings.Enabled)
             return true;
 
-        if (!IsGMPlayer(player))
-            return true;
-
+        // Cheap Realm First test first: this hook fires on every criteria update of every character.
         AchievementEntry const* achievement = sAchievementStore.LookupEntry(criteria->referredAchievement);
-        if (achievement && IsRealmFirstAchievement(achievement))
+        if (!achievement || !IsRealmFirstAchievement(achievement))
+            return true;
+
+        if (Settings.PreventGMAchievements && IsGMPlayer(player))
+            return false;
+
+        if (IsExcludedBot(player))
             return false;
 
         return true;
@@ -918,6 +961,12 @@ public:
         }
 
         Player* target = player->GetConnectedPlayer();
+        if (IsExcludedBot(target))
+        {
+            handler->PSendSysMessage("{} is a random or addclass bot and cannot hold Realm First achievements (RealmFirstTitles.PreventBotAchievements).", target->GetName());
+            return false;
+        }
+
         AchievementEntry const* achievement = sAchievementStore.LookupEntry(achievementId);
         if (!achievement)
         {

@@ -178,3 +178,10 @@ If you find this module helpful for your server, please consider giving it a **s
 ## 📄 License
 
 This project is licensed under the [GNU AGPL v3 License](LICENSE).
+
+## Tofu Worldview fork (branch `tofu`)
+
+Fork of https://github.com/AlsoNotMehh/mod-realm-first-titles at 32d7756 for the Tofu Worldview server (mod-playerbots fork of AzerothCore). Requires mod-playerbots in the same build.
+
+- New conf key `RealmFirstTitles.PreventBotAchievements` (default 1): playerbots random and addclass bots (characters on the playerbots random-bot accounts) cannot earn Realm First criteria or complete Realm First achievements, so a bot never closes a Realm First for real players. Realm First titles a bot already holds are removed at its login and by the startup and `.realmfirst audit` repairs, and `.realmfirst grant` refuses such a bot. Altbots on real player accounts are not affected.
+- A Realm First a bot completed before this fork stays closed for the realm until that bot's `character_achievement` row is deleted and the worldserver restarts (the core loads realm-wide completions only at startup).

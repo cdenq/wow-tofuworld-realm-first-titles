@@ -103,6 +103,16 @@ RealmFirstTitles.AuditRepairOfflineCharacters = 1
 RealmFirstTitles.PreventGMAchievements = 1
 
 #
+#   RealmFirstTitles.PreventBotAchievements
+#       Description: Tofu. Block playerbots random and addclass bots (characters on the playerbots random-bot accounts) from earning Realm First criteria, completing Realm First achievements, or holding Realm First titles. Titles a bot already holds are removed at its login and by the startup or GM audit. Altbots on real player accounts are not affected.
+#                    A Realm First a bot already completed stays closed for the realm until its character_achievement row is deleted and the worldserver restarts.
+#       Default:     1 (Enabled)
+#                    0 (Disabled)
+#
+
+RealmFirstTitles.PreventBotAchievements = 1
+
+#
 #   RealmFirstTitles.AuditOutputLimit
 #       Description: Maximum number of detail lines printed during GM audit commands.
 #       Default:     25
